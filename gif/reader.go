@@ -167,30 +167,48 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 	}
 
 	for {
+		m, delayTime, disposalMethod, err := d.decodeFrame()
+		switch err {
+		case nil:
+		case io.EOF:
+			return nil
+		default:
+			return err
+		}
+		if keepAllFrames || len(d.image) == 0 {
+			d.image = append(d.image, m)
+			d.delay = append(d.delay, delayTime)
+			d.disposal = append(d.disposal, disposalMethod)
+		}
+	}
+}
+
+func (d *decoder) decodeFrame() (*image.Paletted, int, byte, error) {
+	for {
 		c, err := readByte(d.r)
 		if err != nil {
-			return fmt.Errorf("gif: reading frames: %v", err)
+			return nil, 0, 0, fmt.Errorf("gif: reading frames: %v", err)
 		}
 		switch c {
 		case sExtension:
 			if err = d.readExtension(); err != nil {
-				return err
+				return nil, 0, 0, err
 			}
 
 		case sImageDescriptor:
 			m, err := d.newImageFromDescriptor()
 			if err != nil {
-				return err
+				return nil, 0, 0, err
 			}
 			useLocalColorTable := d.imageFields&fColorTable != 0
 			if useLocalColorTable {
 				m.Palette, err = d.readColorTable(d.imageFields)
 				if err != nil {
-					return err
+					return nil, 0, 0, err
 				}
 			} else {
 				if d.globalColorTable == nil {
-					return errors.New("gif: no color table")
+					return nil, 0, 0, errors.New("gif: no color table")
 				}
 				m.Palette = d.globalColorTable
 			}
@@ -216,10 +234,10 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 			}
 			litWidth, err := readByte(d.r)
 			if err != nil {
-				return fmt.Errorf("gif: reading image data: %v", err)
+				return nil, 0, 0, fmt.Errorf("gif: reading image data: %v", err)
 			}
 			if litWidth < 2 || litWidth > 8 {
-				return fmt.Errorf("gif: pixel size in decode out of range: %d", litWidth)
+				return nil, 0, 0, fmt.Errorf("gif: pixel size in decode out of range: %d", litWidth)
 			}
 			// A wonderfully Go-like piece of magic.
 			br := &blockReader{r: d.r}
@@ -227,9 +245,9 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 			defer lzwr.Close()
 			if err = readFull(lzwr, m.Pix); err != nil {
 				if err != io.ErrUnexpectedEOF {
-					return fmt.Errorf("gif: reading image data: %v", err)
+					return nil, 0, 0, fmt.Errorf("gif: reading image data: %v", err)
 				}
-				return errNotEnough
+				return nil, 0, 0, errNotEnough
 			}
 			// In theory, both lzwr and br should be exhausted. Reading from them
 			// should yield (0, io.EOF).
@@ -244,9 +262,9 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 			// See https://golang.org/issue/9856 for an example GIF.
 			if n, err := lzwr.Read(d.tmp[:1]); n != 0 || (err != io.EOF && err != io.ErrUnexpectedEOF) {
 				if err != nil {
-					return fmt.Errorf("gif: reading image data: %v", err)
+					return nil, 0, 0, fmt.Errorf("gif: reading image data: %v", err)
 				}
-				return errTooMuch
+				return nil, 0, 0, errTooMuch
 			}
 
 			// In practice, some GIFs have an extra byte in the data sub-block
@@ -255,13 +273,13 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 				n, err := br.Read(d.tmp[:2])
 				nExtraBytes += n
 				if nExtraBytes > 1 {
-					return errTooMuch
+					return nil, 0, 0, errTooMuch
 				}
 				if err == io.EOF {
 					break
 				}
 				if err != nil {
-					return fmt.Errorf("gif: reading image data: %v", err)
+					return nil, 0, 0, fmt.Errorf("gif: reading image data: %v", err)
 				}
 			}
 
@@ -269,7 +287,7 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 			if len(m.Palette) < 256 {
 				for _, pixel := range m.Pix {
 					if int(pixel) >= len(m.Palette) {
-						return errBadPixel
+						return nil, 0, 0, errBadPixel
 					}
 				}
 			}
@@ -279,25 +297,22 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 				uninterlace(m)
 			}
 
-			if keepAllFrames || len(d.image) == 0 {
-				d.image = append(d.image, m)
-				d.delay = append(d.delay, d.delayTime)
-				d.disposal = append(d.disposal, d.disposalMethod)
-			}
+			delayTime := d.delayTime
 			// The GIF89a spec, Section 23 (Graphic Control Extension) says:
 			// "The scope of this extension is the first graphic rendering block
 			// to follow." We therefore reset the GCE fields to zero.
 			d.delayTime = 0
 			d.hasTransparentIndex = false
+			return m, delayTime, d.disposalMethod, nil
 
 		case sTrailer:
 			if len(d.image) == 0 {
-				return fmt.Errorf("gif: missing image data")
+				return nil, 0, 0, fmt.Errorf("gif: missing image data")
 			}
-			return nil
+			return nil, 0, 0, io.EOF
 
 		default:
-			return fmt.Errorf("gif: unknown block type: 0x%.2x", c)
+			return nil, 0, 0, fmt.Errorf("gif: unknown block type: 0x%.2x", c)
 		}
 	}
 }
