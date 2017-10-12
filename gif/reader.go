@@ -167,7 +167,7 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 	}
 
 	for {
-		m, delayTime, disposalMethod, err := d.decodeFrame()
+		m, delayTime, disposalMethod, err := d.decodeFrame(false)
 		switch err {
 		case nil:
 		case io.EOF:
@@ -183,7 +183,7 @@ func (d *decoder) decode(r io.Reader, configOnly, keepAllFrames bool) error {
 	}
 }
 
-func (d *decoder) decodeFrame() (*image.Paletted, int, byte, error) {
+func (d *decoder) decodeFrame(ignoreMissing bool) (*image.Paletted, int, byte, error) {
 	for {
 		c, err := readByte(d.r)
 		if err != nil {
@@ -306,7 +306,7 @@ func (d *decoder) decodeFrame() (*image.Paletted, int, byte, error) {
 			return m, delayTime, d.disposalMethod, nil
 
 		case sTrailer:
-			if len(d.image) == 0 {
+			if !ignoreMissing && len(d.image) == 0 {
 				return nil, 0, 0, fmt.Errorf("gif: missing image data")
 			}
 			return nil, 0, 0, io.EOF
@@ -512,6 +512,61 @@ func Decode(r io.Reader) (image.Image, error) {
 		return nil, err
 	}
 	return d.image[0], nil
+}
+
+// FrameDecoder provides a convenient interface for frame-by-frame decoding of
+// a GIF image.
+type FrameDecoder struct {
+	r   io.Reader
+	d   *decoder
+	err error
+
+	img            *image.Paletted
+	delayTime      int
+	disposalMethod byte
+}
+
+// NewFrameDecoder returns a new FrameDecoder to read from r.
+func NewFrameDecoder(r io.Reader) *FrameDecoder { return &FrameDecoder{r: r} }
+
+// Next decodes the next frame. It returns false when decoding stops, either by
+// reaching the end of the input or an error. After Next returns false, the Err
+// method will return any error that occurred during decoding.
+func (fd *FrameDecoder) Next() bool {
+	if fd.err != nil {
+		return false
+	}
+	if fd.d == nil {
+		fd.d = &decoder{}
+		if err := fd.d.decode(fd.r, true, false); err != nil {
+			fd.err = err
+			return false
+		}
+	}
+	var err error
+	if fd.img, fd.delayTime, fd.disposalMethod, err = fd.d.decodeFrame(true); err != nil {
+		fd.err = err
+		return false
+	}
+	return true
+}
+
+// Frame returns most recent frame decoded by a call to Next. Extra attributes
+// are delay time in 100ths of a second and disposal method — see GIF.Delay and
+// GIF.Disposal documentation.
+func (fd *FrameDecoder) Frame() (*image.Paletted, int, byte) {
+	return fd.img, fd.delayTime, fd.disposalMethod
+}
+
+// TODO(artyom): add FrameDecode method to expose LoopCount
+
+// Err returns first error encountered by the FrameDecoder
+func (fd *FrameDecoder) Err() error {
+	switch fd.err {
+	case nil, io.EOF:
+		return nil
+	}
+	return fd.err
 }
 
 // GIF represents the possibly multiple images stored in a GIF file.
