@@ -7,10 +7,15 @@ package gif
 import (
 	"bytes"
 	"compress/lzw"
+	"fmt"
 	"image"
 	"image/color"
+	"image/color/palette"
 	"io/ioutil"
+	"os"
+	"os/exec"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -341,6 +346,51 @@ func TestUnexpectedEOF(t *testing.T) {
 		if !strings.HasPrefix(text, "gif:") || !strings.HasSuffix(text, ": unexpected EOF") {
 			t.Errorf("Decode(testGIF[:%d]) = %v, want gif: ...: unexpected EOF", i, err)
 		}
+	}
+}
+
+// See golang.org/issue/22237
+func TestDecodeMemoryConsumption(t *testing.T) {
+	if os.Getenv("GO_TEST_GIF") == "" {
+		// heap size increase can only be detected deterministically if
+		// the test is run as a separate clean process
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDecodeMemoryConsumption$")
+		cmd.Env = append(os.Environ(), "GO_TEST_GIF=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if len(out) > 0 {
+				t.Fatalf("%s", out)
+			}
+			t.Fatalf("subprocess error: %v", err)
+		}
+		return
+	}
+	const frames = 3000
+	img := image.NewPaletted(image.Rectangle{Max: image.Point{1, 1}}, palette.WebSafe)
+	hugeGIF := &GIF{
+		Image:    make([]*image.Paletted, frames),
+		Delay:    make([]int, frames),
+		Disposal: make([]byte, frames),
+	}
+	for i := 0; i < frames; i++ {
+		hugeGIF.Image[i] = img
+		hugeGIF.Delay[i] = 60
+	}
+	buf := new(bytes.Buffer)
+	if err := EncodeAll(buf, hugeGIF); err != nil {
+		t.Fatal("EncodeAll:", err)
+	}
+	s0 := new(runtime.MemStats)
+	runtime.ReadMemStats(s0)
+	if _, err := Decode(buf); err != nil {
+		t.Fatal("Decode:", err)
+	}
+	s1 := new(runtime.MemStats)
+	runtime.ReadMemStats(s1)
+	if heapDiff := int64(s1.HeapSys - s0.HeapSys); heapDiff>>20 > 30 {
+		// not using t.Fatalf since output is captured and printed by
+		// the parent test process
+		fmt.Printf("Decode of %d frames increased heap by %dMB", frames, heapDiff>>20)
+		os.Exit(1)
 	}
 }
 

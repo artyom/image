@@ -242,8 +242,8 @@ func (d *decoder) decodeFrame(ignoreMissing bool) (*image.Paletted, int, byte, e
 			// A wonderfully Go-like piece of magic.
 			br := &blockReader{r: d.r}
 			lzwr := lzw.NewReader(br, lzw.LSB, int(litWidth))
-			defer lzwr.Close()
 			if err = readFull(lzwr, m.Pix); err != nil {
+				lzwr.Close()
 				if err != io.ErrUnexpectedEOF {
 					return nil, 0, 0, fmt.Errorf("gif: reading image data: %v", err)
 				}
@@ -260,7 +260,9 @@ func (d *decoder) decodeFrame(ignoreMissing bool) (*image.Paletted, int, byte, e
 			// before the LZW decoder saw an explicit end code), provided that
 			// the io.ReadFull call above successfully read len(m.Pix) bytes.
 			// See https://golang.org/issue/9856 for an example GIF.
-			if n, err := lzwr.Read(d.tmp[:1]); n != 0 || (err != io.EOF && err != io.ErrUnexpectedEOF) {
+			n, err := lzwr.Read(d.tmp[:1])
+			lzwr.Close()
+			if n != 0 || (err != io.EOF && err != io.ErrUnexpectedEOF) {
 				if err != nil {
 					return nil, 0, 0, fmt.Errorf("gif: reading image data: %v", err)
 				}
