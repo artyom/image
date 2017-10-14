@@ -307,6 +307,69 @@ type Options struct {
 	Drawer draw.Drawer
 }
 
+// NewFrameEncoder returns a new FrameEncoder writing to w.
+func NewFrameEncoder(w io.Writer, cfg image.Config, loopCnt int, bgIndex byte) *FrameEncoder {
+	e := encoder{g: GIF{
+		LoopCount:       loopCnt,
+		Config:          cfg,
+		BackgroundIndex: bgIndex,
+	}}
+	if ww, ok := w.(writer); ok {
+		e.w = ww
+	} else {
+		e.w = bufio.NewWriter(w)
+	}
+	return &FrameEncoder{
+		enc: e,
+	}
+}
+
+// EncodeFrame writes a single frame.
+func (f *FrameEncoder) EncodeFrame(img *image.Paletted, delay int, disposal byte) error {
+	if f.enc.err != nil {
+		return f.enc.err
+	}
+	if !f.wroteHeader {
+		// stub gif to make enc.writeHeader happy
+		f.enc.g.Image = []*image.Paletted{img, img}
+		f.enc.g.Delay = make([]int, 2)
+		f.enc.g.Disposal = make([]byte, 2)
+		if f.enc.g.Config == (image.Config{}) {
+			p := f.enc.g.Image[0].Bounds().Max
+			f.enc.g.Config.Width = p.X
+			f.enc.g.Config.Height = p.Y
+		} else if f.enc.g.Config.ColorModel != nil {
+			if _, ok := f.enc.g.Config.ColorModel.(color.Palette); !ok {
+				f.enc.err = errors.New("gif: GIF color model must be a color.Palette")
+				return f.enc.err
+			}
+		}
+		f.enc.writeHeader()
+		f.wroteHeader = true
+	}
+	f.enc.writeImageBlock(img, delay, disposal)
+	return f.enc.err
+}
+
+// Close writes GIF format trailer and flushes output.
+func (f *FrameEncoder) Close() error {
+	if f.enc.err != nil {
+		return f.enc.err
+	}
+	if !f.wroteHeader {
+		return errors.New("gif: must provide at least one image")
+	}
+	f.enc.writeByte(sTrailer)
+	f.enc.flush()
+	return f.enc.err
+}
+
+// FrameEncoder provides a convenient interface for frame-by-frame encoding of a GIF image.
+type FrameEncoder struct {
+	enc         encoder
+	wroteHeader bool
+}
+
 // EncodeAll writes the images in g to w in GIF format with the
 // given loop count and delay between frames.
 func EncodeAll(w io.Writer, g *GIF) error {
