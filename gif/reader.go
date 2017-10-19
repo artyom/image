@@ -560,7 +560,23 @@ func (fd *FrameDecoder) Frame() (*image.Paletted, int, byte) {
 	return fd.img, fd.delayTime, fd.disposalMethod
 }
 
-// TODO(artyom): add FrameDecode method to expose LoopCount
+// LoopCount returns loop count if known. It is usually known after decoding the
+// first frame – after the first Next() call.
+func (fd *FrameDecoder) LoopCount() int {
+	if fd.d == nil {
+		return 0
+	}
+	return fd.d.loopCount
+}
+
+// BackgroundIndex returns background index if known. It is usually known after
+// decoding the first frame – after the first Next() call.
+func (fd *FrameDecoder) BackgroundIndex() byte {
+	if fd.d == nil {
+		return 0
+	}
+	return fd.d.backgroundIndex
+}
 
 // Err returns first error encountered by the FrameDecoder
 func (fd *FrameDecoder) Err() error {
